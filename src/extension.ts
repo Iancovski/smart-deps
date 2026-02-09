@@ -3,15 +3,14 @@ import * as smartDeps from "./smart-deps";
 import path from "path";
 import SmartDepsCodeActionProvider from "./providers/code-action.provider";
 import { DependencyInfo } from "./interfaces/dependency.interface";
+import { PackageValidator } from "./interfaces/package.interface";
 
+export const openedPackages = new Map<string, PackageValidator>();
 export const diagnostics = vscode.languages.createDiagnosticCollection("smartDeps");
-export const packageLockWatchers = new Map<string, vscode.FileSystemWatcher>();
-export const revalidationTimers = new Map<string, NodeJS.Timeout>();
 
 export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(diagnostics);
-    context.subscriptions.push({ dispose: () => disposeNodeModulesWatchers(packageLockWatchers) });
-    context.subscriptions.push({ dispose: () => disposeRevalidateTimers(revalidationTimers) });
+    context.subscriptions.push({ dispose: () => smartDeps.disposePackageValidators() });
 
     /**************************************************/
     /******************** Providers *******************/
@@ -43,13 +42,11 @@ export function activate(context: vscode.ExtensionContext) {
     /********************* Events *********************/
     /**************************************************/
 
-    // vscode.window.onDidChangeTerminalState
-
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor((editor) => {
             if (editor && isPackageJson(editor.document)) {
                 smartDeps.validateDependencies(editor.document);
-                smartDeps.setWatcher(editor.document);
+                smartDeps.setWatchers(editor.document);
             }
         }),
     );
@@ -63,10 +60,19 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.window.onDidChangeVisibleTextEditors(() => {
+            for (const packagePath of openedPackages.keys()) {
+                if (!isPackageJsonVisible(packagePath)) {
+                    smartDeps.disposePackageValidator(packagePath);
+                }
+            }
+        }),
+    );
+
+    context.subscriptions.push(
         vscode.workspace.onDidCloseTextDocument((doc) => {
             if (isPackageJson(doc)) {
-                diagnostics.delete(doc.uri);
-                smartDeps.clearWatcher(doc);
+                smartDeps.disposePackageValidator(doc.uri.fsPath);
             }
         }),
     );
@@ -76,7 +82,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.textDocuments.forEach((doc) => {
         if (isPackageJson(doc)) {
             smartDeps.validateDependencies(doc);
-            smartDeps.setWatcher(doc);
+            smartDeps.setWatchers(doc);
         }
     });
 }
@@ -85,12 +91,8 @@ function isPackageJson(doc: vscode.TextDocument) {
     return path.basename(doc.uri.fsPath) === "package.json" && !doc.uri.fsPath.includes("node_modules");
 }
 
-function disposeNodeModulesWatchers(watchers: Map<string, vscode.FileSystemWatcher>) {
-    watchers.forEach((watcher) => watcher.dispose());
-    watchers.clear();
-}
-
-function disposeRevalidateTimers(revalidateTimers: Map<string, NodeJS.Timeout>) {
-    revalidateTimers.forEach((timer) => clearTimeout(timer));
-    revalidateTimers.clear();
+function isPackageJsonVisible(packagePath: string): boolean {
+    return vscode.window.visibleTextEditors.some((editor) => {
+        return editor.document.uri.fsPath === packagePath;
+    });
 }

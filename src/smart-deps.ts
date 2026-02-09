@@ -3,9 +3,9 @@ import fs from "fs";
 import path from "path";
 import semver from "semver";
 import { DependencyInfo } from "./interfaces/dependency.interface";
-import { diagnostics, packageLockWatchers, revalidationTimers } from "./extension";
+import { diagnostics, openedPackages } from "./extension";
 
-export function validateDependencies(doc: vscode.TextDocument, showWarning = true) {
+export function validateDependencies(doc: vscode.TextDocument) {
     diagnostics.delete(doc.uri);
 
     const dir = path.dirname(doc.uri.fsPath);
@@ -44,18 +44,16 @@ export function validateDependencies(doc: vscode.TextDocument, showWarning = tru
     if (diagnosticsList.length > 0) {
         diagnostics.set(doc.uri, diagnosticsList);
 
-        if (showWarning) {
-            const message =
-                diagnosticsList.length === 1
-                    ? "A dependency is missing or has an incorrect version."
-                    : `Some dependencies are missing or have incorrect versions.`;
+        const message =
+            diagnosticsList.length === 1
+                ? "A dependency is missing or has an incorrect version."
+                : `Some dependencies are missing or have incorrect versions.`;
 
-            vscode.window.showWarningMessage(message, "Fix all", "Dismiss").then((selection) => {
-                if (selection === "Fix all") {
-                    installAllDependencies(dir);
-                }
-            });
-        }
+        vscode.window.showWarningMessage(message, "Fix all", "Dismiss").then((selection) => {
+            if (selection === "Fix all") {
+                installAllDependencies(dir);
+            }
+        });
     }
 }
 
@@ -73,49 +71,53 @@ export function installAllDependencies(root: string) {
     terminal.sendText("npm install");
 }
 
-export function setWatcher(doc: vscode.TextDocument) {
-    if (packageLockWatchers.has(doc.uri.fsPath)) return;
+export function setWatchers(doc: vscode.TextDocument) {
+    if (openedPackages.has(doc.uri.fsPath)) return;
 
-    const dir = path.join(path.dirname(doc.uri.fsPath), "package-lock.json");
-    const watcher = vscode.workspace.createFileSystemWatcher(dir);
+    const packageLockDir = path.join(path.dirname(doc.uri.fsPath), "package-lock.json");
+    const packageLockWatcher = vscode.workspace.createFileSystemWatcher(packageLockDir);
+    packageLockWatcher.onDidCreate(() => revalidate(doc));
+    packageLockWatcher.onDidChange(() => revalidate(doc));
+    packageLockWatcher.onDidDelete(() => revalidate(doc));
 
-    watcher.onDidCreate(() => revalidate(doc));
-    watcher.onDidChange(() => revalidate(doc));
+    const nodeModulesDir = path.join(path.dirname(doc.uri.fsPath), "node_modules");
+    const nodeModulesWatcher = vscode.workspace.createFileSystemWatcher(nodeModulesDir);
+    nodeModulesWatcher.onDidDelete(() => validateDependencies(doc));
 
-    packageLockWatchers.set(doc.uri.fsPath, watcher);
+    openedPackages.set(doc.uri.fsPath, { packageLockWatcher, nodeModulesWatcher });
 }
 
-export function clearWatcher(doc: vscode.TextDocument) {
-    const watcher = packageLockWatchers.get(doc.uri.fsPath);
+export function disposePackageValidator(packagePath: string) {
+    const validator = openedPackages.get(packagePath);
 
-    if (watcher) {
-        watcher.dispose();
-        packageLockWatchers.delete(doc.uri.fsPath);
+    if (validator) {
+        validator.packageLockWatcher.dispose();
+        validator.nodeModulesWatcher.dispose();
+        clearTimeout(validator.revalidationTimer);
+        openedPackages.delete(packagePath);
     }
 
-    const timer = revalidationTimers.get(doc.uri.fsPath);
+    diagnostics.delete(vscode.Uri.parse(packagePath));
+}
 
-    if (timer) {
-        clearTimeout(timer);
-        revalidationTimers.delete(doc.uri.fsPath);
-    }
+export function disposePackageValidators() {
+    openedPackages.forEach(({ packageLockWatcher, nodeModulesWatcher, revalidationTimer }) => {
+        packageLockWatcher.dispose();
+        nodeModulesWatcher.dispose();
+        clearTimeout(revalidationTimer);
+    });
 }
 
 function revalidate(doc: vscode.TextDocument) {
-    let timer = revalidationTimers.get(doc.uri.fsPath);
+    const pkg = openedPackages.get(doc.uri.fsPath);
+    if (!pkg) return;
 
-    if (timer) {
-        clearTimeout(timer);
-        revalidationTimers.delete(doc.uri.fsPath);
-    }
+    let timer = pkg.revalidationTimer;
+    if (timer) clearTimeout(timer);
 
-    revalidationTimers.set(
-        doc.uri.fsPath,
-        setTimeout(() => {
-            revalidationTimers.delete(doc.uri.fsPath);
-            validateDependencies(doc, false);
-        }, 1000),
-    );
+    pkg.revalidationTimer = setTimeout(() => {
+        validateDependencies(doc);
+    }, 1000);
 }
 
 function getAllDependencies(pkg: any) {
