@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import path from "path";
-import { DependencyInfo } from "../interfaces/dependency.interface";
+import { DependencyInfo, DependencyScope } from "../interfaces/dependency.interface";
 
 export default class CodeActionProvider implements vscode.CodeActionProvider {
     provideCodeActions(document: vscode.TextDocument, _range: vscode.Range, context: vscode.CodeActionContext): vscode.CodeAction[] {
@@ -67,9 +67,24 @@ function extractDependencyInfo(doc: vscode.TextDocument, range: vscode.Range): D
     const packageRoot = path.dirname(doc.uri.fsPath);
     if (!packageRoot) return null;
 
+    const scope = findDependencyScope(doc, range.start.line);
+    if (!scope) return null;
+
     return {
         name: match[1],
         version: match[2],
-        packageRoot: packageRoot,
+        packageRoot,
+        scope,
     };
+}
+
+function findDependencyScope(doc: vscode.TextDocument, depLine: number): DependencyScope | null {
+    for (let line = depLine; line >= 0; line--) {
+        const text = doc.lineAt(line).text;
+
+        if (text.includes('"dependencies"')) return "dependencies";
+        if (text.includes('"devDependencies"')) return "devDependencies";
+    }
+
+    return null;
 }

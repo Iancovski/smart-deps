@@ -5,7 +5,7 @@ export function installDependency(dep: DependencyInfo) {
     const terminal = vscode.window.createTerminal({ name: "SmartDeps", cwd: dep.packageRoot });
 
     terminal.show();
-    terminal.sendText(`npm install ${dep.name}@${dep.version}`);
+    terminal.sendText(`npm install ${dep.name}@${dep.version} ${dep.scope === "devDependencies" ? "--save-dev" : ""}`);
 }
 
 export function installAllDependencies(root: string) {
